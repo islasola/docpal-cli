@@ -5,7 +5,6 @@ node_modules/
 # Lockfiles
 package-lock.json
 yarn.lock
-pnpm-lock.yaml
 
 # Build artifacts (copied by prepublish scripts)
 packages/plugin/skills/
