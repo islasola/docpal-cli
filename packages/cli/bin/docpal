@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+
+const OutputFormatter = require('../lib/output');
+
+const commands = {
+    'init': () => require('../src/commands/init'),
+    'auth': () => require('../src/commands/auth'),
+    'manual': () => require('../src/commands/manual'),
+    'draft': () => require('../src/commands/draft'),
+    'sync': () => require('../src/commands/sync'),
+};
+
+function printUsage() {
+    console.log(`
+Usage: docpal <command> [subcommand] [options]
+
+Commands:
+  init                Initialize DocPal (create or connect bitable)
+  auth login          Authenticate as a Feishu user via OAuth2
+  auth status         Show current authentication state
+  auth refresh        Refresh user access token
+  auth logout         Clear stored user credentials
+
+  manual create       Create a new manual
+  manual convert      Convert an existing wiki/drive folder to a manual
+  manual add          Add an existing Feishu doc to a manual
+  manual approve      Approve a doc for publishing
+  manual publish      Publish approved docs to GitHub
+  manual release      Publish all approved docs as a versioned snapshot
+  manual list         List all manuals
+  manual status       Show pipeline status of docs in a manual
+
+  draft create        Push a local Markdown draft to Feishu
+  draft update        Patch an existing Feishu doc with new markdown content
+
+  sync pull           Sync merged PR changes from GitHub back to Feishu
+
+Global Options:
+  --base <token>      Bitable app token (or set BASE_TOKEN in .env)
+  --auth <bot|user>   Authentication mode: bot (default) or user
+  --json              Output as JSON
+  --table             Output as aligned table
+  --dry-run           Preview changes without executing
+  --force             Override warnings
+  --help, -h          Show this help
+
+Environment (.env):
+  APP_ID              Feishu app ID
+  APP_SECRET          Feishu app secret
+  BASE_TOKEN          Bitable app token (set by docpal init)
+  FEISHU_HOST         Feishu API host (default: https://open.feishu.cn)
+  FEISHU_TENANT       Feishu tenant alias (e.g., "zilliverse" -> https://zilliverse.feishu.cn)
+  DOCPLA_AUTH_MODE    Default auth mode: 'bot' or 'user' (default: bot)
+  DOCPLA_AUTH_FILE    Path to auth token file (default: ~/.docpal/auth.json)
+  GITHUB_TOKEN        GitHub personal access token
+`);
+}
+
+function parseGlobalArgs(argv) {
+    const args = {};
+    const rest = [];
+    for (let i = 2; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '--base' && argv[i + 1]) {
+            args.baseToken = argv[++i];
+        } else if (arg === '--auth' && argv[i + 1]) {
+            args.authMode = argv[++i];
+        } else if (arg === '--json') {
+            args.outputFormat = 'json';
+        } else if (arg === '--table') {
+            args.outputFormat = 'table';
+        } else if (arg === '--dry-run') {
+            args.dryRun = true;
+        } else if (arg === '--force') {
+            args.force = true;
+        } else if (arg === '--help' || arg === '-h') {
+            if (rest.length > 0) {
+                rest.push(arg);
+            } else {
+                args.help = true;
+            }
+        } else {
+            rest.push(arg);
+        }
+    }
+
+    args.output = new OutputFormatter(args.outputFormat || 'text');
+
+    return { args, rest };
+}
+
+async function main() {
+    const { args, rest } = parseGlobalArgs(process.argv);
+
+    if (rest.length === 0) {
+        printUsage();
+        process.exit(0);
+    }
+
+    const [command, subcommand, ...subRest] = rest;
+
+    if (args.help && !commands[command]) {
+        printUsage();
+        process.exit(0);
+    }
+
+    if (!commands[command]) {
+        console.error(`Unknown command: ${command}`);
+        printUsage();
+        process.exit(1);
+    }
+
+    if (args.authMode) {
+        if (args.authMode !== 'bot' && args.authMode !== 'user') {
+            console.error(`Invalid auth mode: ${args.authMode}. Must be 'bot' or 'user'.`);
+            process.exit(1);
+        }
+        const larkAuth = require('../lib/larkAuth');
+        larkAuth.setMode(args.authMode);
+    }
+
+    const cmdModule = commands[command]();
+    if (typeof cmdModule.run === 'function') {
+        await cmdModule.run(subcommand, subRest, args);
+    } else if (typeof cmdModule === 'function') {
+        await cmdModule(subcommand, subRest, args);
+    } else {
+        console.error(`Invalid command module: ${command}`);
+        process.exit(1);
+    }
+}
+
+main().catch(err => {
+    console.error(err);
+    process.exit(1);
+});

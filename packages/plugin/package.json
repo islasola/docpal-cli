@@ -1,0 +1,24 @@
+{
+  "name": "@islasola/docpal-plugin",
+  "version": "0.1.0",
+  "description": "DocPal Claude Code plugin — workflow skills for Feishu↔Docusaurus documentation pipelines",
+  "files": [
+    ".claude-plugin/",
+    "skills/",
+    "scripts/"
+  ],
+  "scripts": {
+    "prepublishOnly": "node scripts/copy-skills.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "claude-plugin",
+    "docpal",
+    "feishu",
+    "lark",
+    "docusaurus",
+    "documentation"
+  ]
+}

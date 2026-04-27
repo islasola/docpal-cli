@@ -1,0 +1,11 @@
+{
+  "name": "docpal",
+  "description": "DocPal — manage Feishu↔Docusaurus documentation pipelines from Claude Code (drafting, organizing manuals, translating, publishing, syncing).",
+  "version": "0.1.0",
+  "author": { "name": "Anthony", "email": "" },
+  "homepage": "https://github.com/islasola/docpal-cli",
+  "repository": "https://github.com/islasola/docpal-cli",
+  "license": "MIT",
+  "keywords": ["docpal", "feishu", "lark", "docusaurus", "documentation", "translation"],
+  "skills": "./skills/"
+}

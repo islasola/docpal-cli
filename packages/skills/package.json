@@ -1,0 +1,23 @@
+{
+  "name": "@islasola/docpal-skills",
+  "version": "0.1.0",
+  "description": "DocPal skills — reusable AI agent skills for documentation workflows",
+  "files": [
+    "skills/",
+    "scripts/"
+  ],
+  "scripts": {
+    "prepublishOnly": "node scripts/copy-skills.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "keywords": [
+    "docpal",
+    "skills",
+    "claude-code",
+    "feishu",
+    "lark",
+    "docusaurus",
+    "documentation"
+  ]
+}
