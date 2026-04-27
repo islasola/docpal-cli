@@ -1,5 +1,11 @@
 # @islasola/docpal-cli
 
+## 0.2.1
+
+### Patch Changes
+
+- 82735a1: Add README files to all packages.
+
 ## 0.2.0
 
 ### Minor Changes
