@@ -1,6 +1,6 @@
 {
   "name": "@islasola/docpal-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DocPal Claude Code plugin — workflow skills for Feishu↔Docusaurus documentation pipelines",
   "files": [
     ".claude-plugin/",
