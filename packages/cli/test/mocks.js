@@ -64,7 +64,7 @@ class MockBitableClient {
         const tables = this.tables.get(baseToken) || [];
         tables.push({ table_id: tableId, table_name: name, fields });
         this.tables.set(baseToken, tables);
-        return { table: { table_id: tableId, table_name: name } };
+        return { table_id: tableId, table_name: name, table: { table_id: tableId, table_name: name } };
     }
 
     async ensureTable(baseToken, name, fields = [], linkFields = []) {

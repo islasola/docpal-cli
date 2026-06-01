@@ -25,7 +25,7 @@ const DEFAULT_SCOPES = [
     'auth:user.id:read',
 ].join(' ');
 
-const AUTH_FILE_PATH = process.env.DOCPLA_AUTH_FILE ||
+const AUTH_FILE_PATH = process.env.DOCPAL_AUTH_FILE ||
     path.join(process.env.HOME || process.env.USERPROFILE || '~', '.docpal', 'auth.json');
 
 class UserAuth {

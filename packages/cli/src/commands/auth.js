@@ -155,7 +155,7 @@ async function login(args, globalArgs) {
             }
 
             console.log('\nYou can now use docpal with your user credentials.');
-            console.log('Switch to user mode with: DOCPLA_AUTH_MODE=user or --auth user');
+            console.log('Switch to user mode with: DOCPAL_AUTH_MODE=user or --auth user');
         }
     } catch (err) {
         console.error(`\nAuthorization failed: ${err.message}`);

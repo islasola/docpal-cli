@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '..', '.env') });
 
 const OutputFormatter = require('../lib/output');
 
@@ -44,7 +44,6 @@ Global Options:
   --json              Output as JSON
   --table             Output as aligned table
   --dry-run           Preview changes without executing
-  --force             Override warnings
   --help, -h          Show this help
 
 Environment (.env):
@@ -53,8 +52,8 @@ Environment (.env):
   BASE_TOKEN          Bitable app token (set by docpal init)
   FEISHU_HOST         Feishu API host (default: https://open.feishu.cn)
   FEISHU_TENANT       Feishu tenant alias (e.g., "zilliverse" -> https://zilliverse.feishu.cn)
-  DOCPLA_AUTH_MODE    Default auth mode: 'bot' or 'user' (default: bot)
-  DOCPLA_AUTH_FILE    Path to auth token file (default: ~/.docpal/auth.json)
+  DOCPAL_AUTH_MODE    Auth mode override: 'bot' or 'user' (default: auto)
+  DOCPAL_AUTH_FILE    Path to auth token file (default: ~/.docpal/auth.json)
   GITHUB_TOKEN        GitHub personal access token
 `);
 }
@@ -74,8 +73,6 @@ function parseGlobalArgs(argv) {
             args.outputFormat = 'table';
         } else if (arg === '--dry-run') {
             args.dryRun = true;
-        } else if (arg === '--force') {
-            args.force = true;
         } else if (arg === '--help' || arg === '-h') {
             if (rest.length > 0) {
                 rest.push(arg);

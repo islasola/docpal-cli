@@ -1,68 +1,16 @@
 const fetch = require('node-fetch');
 const FormData = require('form-data');
-const larkAuth = require('./larkAuth');
-const Bottleneck = require('bottleneck');
+const { feishuRequest, feishuRequestWithRetry, feishuDownload } = require('./feishuClient');
 
 const FEISHU_HOST = process.env.FEISHU_HOST || 'https://open.feishu.cn';
 
-// Rate limiters: max 1 concurrent, 52ms minimum (matching reference implementations)
-const apiLimiter = new Bottleneck({ maxConcurrent: 1, minTime: 52 });
-const downloadLimiter = new Bottleneck({ maxConcurrent: 1, minTime: 52 });
-
-const MAX_RETRIES = 3;
-const RETRY_BASE_DELAY = 1000;
-
 class LarkDocClient {
     async request(method, path, body, options = {}) {
-        return apiLimiter.schedule(async () => {
-            const headers = await larkAuth.headers();
-            const url = `${FEISHU_HOST}${path}`;
-
-            const res = await fetch(url, {
-                method,
-                headers: options.isMultipart ? headers : {
-                    ...headers,
-                    ...(options.headers || {})
-                },
-                ...(body && !options.isMultipart ? { body: JSON.stringify(body) } : body ? { body } : {})
-            });
-
-            const data = await res.json();
-
-            // Handle rate limiting from API
-            if (data.code === 99991400) {
-                const resetAfter = parseInt(res.headers.get('x-ogw-ratelimit-reset') || '1', 10);
-                console.warn(`Rate limited, waiting ${resetAfter}s...`);
-                await new Promise(r => setTimeout(r, resetAfter * 1000));
-                return this.request(method, path, body, options);
-            }
-
-            if (data.code !== 0 && data.code !== undefined) {
-                throw new Error(`Lark API error: ${data.msg} (code: ${data.code})`);
-            }
-
-            return data.data || data;
-        });
+        return feishuRequest(method, path, body, options);
     }
 
-    /**
-     * Request with retry and exponential backoff.
-     */
     async requestWithRetry(method, path, body, options = {}) {
-        let lastError;
-        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            try {
-                return await this.request(method, path, body, options);
-            } catch (err) {
-                lastError = err;
-                if (attempt < MAX_RETRIES - 1) {
-                    const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
-                    console.warn(`Request failed (attempt ${attempt + 1}/${MAX_RETRIES}), retrying in ${delay}ms: ${err.message}`);
-                    await new Promise(r => setTimeout(r, delay));
-                }
-            }
-        }
-        throw lastError;
+        return feishuRequestWithRetry(method, path, body, options);
     }
 
     // --- Docx operations ---
@@ -76,6 +24,50 @@ class LarkDocClient {
             body.content = options.content;
         }
         return this.request('POST', '/open-apis/docx/v1/documents', body);
+    }
+
+    async createWikiDoc(parentNodeToken, title, options = {}) {
+        const spaceId = options.spaceId || options.space_id || (await this.getWikiNode(parentNodeToken))?.node?.space_id;
+        if (!spaceId) {
+            throw new Error(`Could not resolve wiki space_id for parent node: ${parentNodeToken}`);
+        }
+
+        const result = await this.request('POST', `/open-apis/wiki/v2/spaces/${spaceId}/nodes`, {
+            obj_type: 'docx',
+            node_type: 'origin',
+            parent_node_token: parentNodeToken,
+            title,
+        });
+
+        const node = result.node;
+        return {
+            node,
+            document: {
+                document_id: node?.obj_token,
+                title: node?.title || title,
+                node_token: node?.node_token,
+                parent_node_token: node?.parent_node_token,
+                space_id: node?.space_id,
+                url: node?.url,
+            }
+        };
+    }
+
+    async createDocInParent(parentToken, title, options = {}) {
+        if (options.parentType === 'wiki' || options.parent_type === 'wiki') {
+            return this.createWikiDoc(parentToken, title, options);
+        }
+
+        try {
+            const parentNode = await this.getWikiNode(parentToken);
+            if (parentNode?.node?.space_id) {
+                return this.createWikiDoc(parentToken, title, { ...options, spaceId: parentNode.node.space_id });
+            }
+        } catch (err) {
+            // Not a wiki node; fall through to Drive folder creation.
+        }
+
+        return this.createDoc(parentToken, title, options);
     }
 
     async getDoc(documentId) {
@@ -298,16 +290,8 @@ class LarkDocClient {
     }
 
     async downloadMedia(fileToken) {
-        return downloadLimiter.schedule(async () => {
-            const headers = await larkAuth.headers();
-            const res = await fetch(`${FEISHU_HOST}/open-apis/drive/v1/medias/${fileToken}/download`, {
-                headers
-            });
-            if (!res.ok) {
-                throw new Error(`Failed to download media: ${res.status}`);
-            }
-            return res.buffer();
-        });
+        const res = await feishuDownload(`/open-apis/drive/v1/medias/${fileToken}/download`);
+        return res.buffer();
     }
 
     /**
@@ -316,22 +300,13 @@ class LarkDocClient {
      * @returns {Promise<Buffer>}
      */
     async downloadBoardPreview(boardToken) {
-        return downloadLimiter.schedule(async () => {
-            const headers = await larkAuth.headers();
-            const url = `${FEISHU_HOST}/open-apis/board/v1/whiteboards/${boardToken}/download_as_image`;
-            const res = await fetch(url, { headers });
-
-            if (!res.ok) {
-                throw new Error(`Failed to download board preview: ${res.status}`);
-            }
-
-            // Accumulate streaming response into buffer
-            const chunks = [];
-            for await (const chunk of res.body) {
-                chunks.push(chunk);
-            }
-            return Buffer.concat(chunks);
-        });
+        const res = await feishuDownload(`/open-apis/board/v1/whiteboards/${boardToken}/download_as_image`);
+        // Accumulate streaming response into buffer
+        const chunks = [];
+        for await (const chunk of res.body) {
+            chunks.push(chunk);
+        }
+        return Buffer.concat(chunks);
     }
 
     /**

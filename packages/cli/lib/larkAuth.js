@@ -11,8 +11,21 @@ class LarkAuth {
     constructor() {
         this.tenantAccessToken = undefined;
         this.tenantAccessTokenExpireTime = undefined;
-        this._mode = process.env.DOCPLA_AUTH_MODE || 'bot'; // 'bot' or 'user'
+        this._mode = process.env.DOCPAL_AUTH_MODE || this._detectUserMode() || 'bot';
         this._userAuth = null;
+    }
+
+    _detectUserMode() {
+        try {
+            const userAuth = require('./userAuth');
+            const tokens = userAuth.loadTokens();
+            if (tokens && tokens.access_token) {
+                return 'user';
+            }
+        } catch (e) {
+            // ignore
+        }
+        return null;
     }
 
     setMode(mode) {
@@ -34,6 +47,13 @@ class LarkAuth {
     }
 
     async fetchTenantToken() {
+        if (!APP_ID) {
+            throw new Error('APP_ID is not set. Add it to your .env file.');
+        }
+        if (!APP_SECRET) {
+            throw new Error('APP_SECRET is not set. Add it to your .env file.');
+        }
+
         const req = {
             method: 'post',
             body: JSON.stringify({

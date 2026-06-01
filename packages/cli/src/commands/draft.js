@@ -179,18 +179,19 @@ async function run(subcommand, args, globalArgs) {
     }
 
     try {
-        const doc = await larkDocClient.createDoc(parsed.parent, title);
+        const doc = await larkDocClient.createDocInParent(parsed.parent, title);
         const docToken = doc.document.document_id;
 
         // Resolve the correct web URL — wiki docs need node_token, not document_id
-        const { url: docLink, nodeToken } = await larkDocClient.resolveDocUrl(docToken, feishuWebHost);
+        const { url: docLink, nodeToken } = doc.document.node_token
+            ? { url: `${feishuWebHost}/wiki/${doc.document.node_token}`, nodeToken: doc.document.node_token }
+            : await larkDocClient.resolveDocUrl(docToken, feishuWebHost);
 
         fmt.progress(`Created Feishu doc: ${docToken}`);
 
         const docRecord = await bitableClient.createRecord(baseToken, 'tblDocs', {
-            'Doc': `[${title}](${docLink})`,
+            'Doc': { link: docLink, text: title },
             'Slug': slug,
-            'Parent Token': parsed.parent,
             'Status': 'Draft',
             'Progress': 'Writing',
             'Publish Targets': parsed.targets || [],
@@ -299,22 +300,12 @@ async function runUpdate(args, globalArgs) {
         let registryUpdate = null;
         if (parsed.manualName || parsed.updateHash) {
             const baseToken = resolveBase(parsed.baseToken);
-            const docs = await bitableClient.searchRecords(baseToken, 'tblDocs', {
-                conditions: [{ field_name: 'Parent Token', operator: 'is', value: [parsed.doc] }],
-            }).catch(() => ({ items: [] }));
-
-            let docRecord = (docs.items || []).find(d => {
-                const url = d.fields.Doc || '';
-                return typeof url === 'string' && url.includes(parsed.doc);
-            }) || (docs.items || [])[0];
-
-            if (!docRecord) {
-                const allDocs = await bitableClient.listRecords(baseToken, 'tblDocs');
-                docRecord = (allDocs.items || []).find(d => {
-                    const url = typeof d.fields.Doc === 'string' ? d.fields.Doc : '';
-                    return url.includes(parsed.doc) || url.includes(documentId);
-                });
-            }
+            const allDocs = await bitableClient.listRecords(baseToken, 'tblDocs');
+            const docRecord = (allDocs.items || []).find(d => {
+                const docField = d.fields.Doc;
+                const url = typeof docField === 'string' ? docField : (docField?.link || '');
+                return url.includes(parsed.doc) || url.includes(documentId);
+            });
 
             if (docRecord) {
                 await bitableClient.updateRecord(baseToken, 'tblDocs', docRecord.record_id, {

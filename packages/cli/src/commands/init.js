@@ -12,6 +12,8 @@ function parseArgs(args) {
             parsed.name = args[++i];
         } else if (arg === '--dry-run') {
             parsed.dryRun = true;
+        } else if (arg === '--force') {
+            parsed.force = true;
         } else if (arg === '--json') {
             parsed.json = true;
         } else if (arg === '--help' || arg === '-h') {
@@ -30,6 +32,7 @@ Initialize DocPal by creating a new bitable or connecting to an existing one.
 Options:
   --base <token>    Connect to an existing bitable (skips creation)
   --name <name>     Name for the new bitable (default: "DocPal")
+  --force           Create a new bitable even if BASE_TOKEN is already set
   --dry-run         Preview without creating
   --json            Output as JSON
   --help, -h        Show this help
@@ -73,12 +76,12 @@ async function ensureTables(baseToken, output) {
         try {
             await bitableClient.createField(baseToken, tableId, {
                 field_name: lf.field_name,
-                type: 21,
+                type: lf.type || 21,
                 property: { table_id: linkedTableId, multiple: lf.multiple }
             });
             output.progress(`  Created Link field: ${lf.table}.${lf.field_name} → ${lf.linked_table}`);
         } catch (err) {
-            if (err.message && err.message.includes('already exist')) {
+            if (err.message && (err.message.includes('already exist') || err.message.includes('FieldNameDuplicated'))) {
                 // Field already exists, skip
             } else {
                 output.progress(`  Warning: Failed to create Link field ${lf.field_name}: ${err.message}`);
@@ -102,6 +105,7 @@ async function run(subcommand, args, globalArgs) {
     const fmt = new OutputFormatter(globalArgs.outputFormat || 'text');
 
     let baseToken;
+    let action;
 
     if (parsed.baseToken) {
         if (parsed.dryRun) {
@@ -111,31 +115,46 @@ async function run(subcommand, args, globalArgs) {
         }
 
         baseToken = parsed.baseToken;
+        action = 'connect';
         fmt.progress(`Connecting to existing bitable: ${baseToken}`);
     } else {
-        const name = parsed.name || 'DocPal';
+        const existingToken = configLoader.getBaseToken();
 
-        if (parsed.dryRun) {
-            fmt.progress(`[DRY RUN] Would create new bitable: "${name}"`);
-            fmt.render({ name, action: 'create', dry_run: true });
-            return;
-        }
-
-        fmt.progress(`Creating bitable: "${name}"`);
-
-        try {
-            const feishuHost = configLoader.get('feishuHost');
-            const newBase = await bitableClient.createBase(name, '');
-            baseToken = newBase.app?.app_token || newBase.app_token || newBase.app?.token;
-
-            if (!baseToken) {
-                throw new Error('Failed to get app_token from created bitable');
+        if (existingToken && !parsed.force) {
+            if (parsed.dryRun) {
+                fmt.progress(`[DRY RUN] Would use existing bitable: ${existingToken}`);
+                fmt.render({ base_token: existingToken, action: 'ensure', dry_run: true });
+                return;
             }
 
-            fmt.progress(`Created bitable: ${baseToken}`);
-        } catch (err) {
-            console.error(`Failed to create bitable: ${err.message}`);
-            process.exit(1);
+            baseToken = existingToken;
+            action = 'ensure';
+            fmt.progress(`Using existing bitable: ${baseToken}`);
+        } else {
+            const name = parsed.name || 'DocPal';
+
+            if (parsed.dryRun) {
+                fmt.progress(`[DRY RUN] Would create new bitable: "${name}"`);
+                fmt.render({ name, action: 'create', dry_run: true });
+                return;
+            }
+
+            fmt.progress(`Creating bitable: "${name}"`);
+
+            try {
+                const newBase = await bitableClient.createBase(name, '');
+                baseToken = newBase.app?.app_token || newBase.app_token || newBase.app?.token;
+
+                if (!baseToken) {
+                    throw new Error('Failed to get app_token from created bitable');
+                }
+
+                fmt.progress(`Created bitable: ${baseToken}`);
+                action = 'created';
+            } catch (err) {
+                console.error(`Failed to create bitable: ${err.message}`);
+                process.exit(1);
+            }
         }
     }
 
@@ -160,7 +179,7 @@ async function run(subcommand, args, globalArgs) {
 
     const result = {
         base_token: baseToken,
-        action: parsed.baseToken ? 'connected' : 'created',
+        action: action,
         tables: TABLE_SCHEMAS.map(s => s.name),
     };
 

@@ -11,7 +11,7 @@ const colors = {
 let passed = 0;
 let failed = 0;
 
-function test(name, fn) {
+function runSingleTest(name, fn) {
     return Promise.resolve().then(() => fn()).then(() => {
         console.log(`${colors.green}PASS${colors.reset} ${name}`);
         passed++;
@@ -66,6 +66,10 @@ async function runTestFile(filePath) {
     console.log(`\n${colors.yellow}Running ${relativePath}${colors.reset}`);
 
     delete require.cache[require.resolve(filePath)];
+    const queuedTests = [];
+    const test = (name, fn) => {
+        queuedTests.push({ name, fn });
+    };
 
     try {
         const testModule = require(filePath);
@@ -76,6 +80,11 @@ async function runTestFile(filePath) {
         console.log(`${colors.red}ERROR${colors.reset} ${relativePath}`);
         console.log(`  ${err.message}`);
         failed++;
+        return;
+    }
+
+    for (const { name, fn } of queuedTests) {
+        await runSingleTest(name, fn);
     }
 }
 

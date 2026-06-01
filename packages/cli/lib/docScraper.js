@@ -41,13 +41,18 @@ class DocScraper {
      * @returns {Promise<{ tree: Object, slugs: Object, sourceMap: Map }>}
      */
     async fetch(options = {}) {
-        const { recursive = true } = options;
+        const { recursive = true, skipBlocks = false } = options;
+        this._skipBlocks = skipBlocks;
+        console.log(`[scraper] fetch() start — sourceType=${this.sourceType}, rootToken=${this.rootToken}, recursive=${recursive}, skipBlocks=${skipBlocks}`);
 
         if (this.baseToken) {
+            console.log('[scraper] Loading slugs from bitable...');
             await this._loadSlugs();
+            console.log(`[scraper] Loaded ${Object.keys(this.slugs).length} slugs`);
         }
 
         if (this.sourceType === 'wiki') {
+            console.log('[scraper] Fetching wiki tree...');
             await this._fetchWikiTree(recursive);
         } else if (this.sourceType === 'drive') {
             await this._fetchDriveTree(recursive);
@@ -58,9 +63,12 @@ class DocScraper {
         // Resolve reference_synced blocks in memory
         await this._resolveReferenceSynced();
 
-        // Validate: all docx nodes must have blocks
-        this._validateTree();
+        // Validate: all docx nodes must have blocks (skip when block fetching is disabled)
+        if (!this._skipBlocks) {
+            this._validateTree();
+        }
 
+        console.log(`[scraper] fetch() complete. sourceMap size: ${this.sourceMap.size}`);
         return { tree: this.tree, slugs: this.slugs, sourceMap: this.sourceMap };
     }
 
@@ -71,7 +79,7 @@ class DocScraper {
         if (!tables.items || tables.items.length === 0) return;
 
         const tableId = tables.items[0].table_id;
-        const records = await bitableClient.listRecords(this.baseToken, tableId, { pageSize: 500 });
+        const records = await bitableClient.listAllRecords(this.baseToken, tableId, { pageSize: 500 });
         this.records = records.items || [];
 
         const rawSlugs = {};
@@ -147,28 +155,43 @@ class DocScraper {
     // --- Wiki tree fetching ---
 
     async _fetchWikiTree(recursive) {
+        console.log(`[scraper] _fetchWikiTree: fetching root node ${this.rootToken}`);
         const nodeData = await larkDocClient.getWikiNode(this.rootToken);
         if (!nodeData || !nodeData.node) {
             throw new Error(`Wiki node not found: ${this.rootToken}`);
         }
 
         this.tree = nodeData.node;
+        console.log(`[scraper] Root node fetched: "${this.tree.title || this.tree.name}"`);
         await this._fetchWikiChildren(this.tree, recursive);
+        console.log(`[scraper] _fetchWikiTree done. sourceMap size: ${this.sourceMap.size}`);
     }
 
     async _fetchWikiChildren(node, recursive) {
+        const nodeName = node.title || node.name || node.node_token || '?';
         node.slug = await this._slugify(node.node_token, node.title);
 
-        // Resolve shortcut nodes
+        // Resolve shortcut nodes — preserve tree position fields
         if (node.node_type === 'shortcut' && node.origin_node_token) {
             const resolved = await larkDocClient.getWikiNode(node.origin_node_token);
             if (resolved && resolved.node) {
+                const preserve = {
+                    parent_node_token: node.parent_node_token,
+                    node_token: node.node_token,
+                    origin_node_token: node.origin_node_token,
+                    children: node.children,
+                    has_child: node.has_child,
+                    title: node.title,
+                };
+                const targetHasChild = resolved.node.has_child;
                 Object.assign(node, resolved.node);
+                Object.assign(node, preserve);
+                node.has_child = targetHasChild || preserve.has_child;
             }
         }
 
         // Fetch blocks for this node
-        if (node.obj_type === 'docx' || node.type === 'docx') {
+        if (!this._skipBlocks && (node.obj_type === 'docx' || node.type === 'docx')) {
             await this._fetchBlocks(node);
         }
 
@@ -177,15 +200,28 @@ class DocScraper {
         if (nodeKey) this.sourceMap.set(nodeKey, node);
 
         if (node.has_child) {
+            console.log(`[scraper] Fetching children for "${nodeName}" (${this.sourceMap.size} nodes so far)`);
             const children = await larkDocClient.listAllWikiNodes(this.spaceId, node.origin_node_token);
+            console.log(`[scraper]   ${children.length} children found`);
 
             for (let child of children) {
-                // Resolve shortcuts
+                // Resolve shortcuts — preserve tree position fields
                 if (child.node_type === 'shortcut' && child.origin_node_token) {
                     try {
                         const resolved = await larkDocClient.getWikiNode(child.origin_node_token);
                         if (resolved && resolved.node) {
+                            const preserve = {
+                                parent_node_token: child.parent_node_token,
+                                node_token: child.node_token,
+                                origin_node_token: child.origin_node_token,
+                                children: child.children,
+                                has_child: child.has_child,
+                                title: child.title,
+                            };
+                            const targetHasChild = resolved.node.has_child;
                             Object.assign(child, resolved.node);
+                            Object.assign(child, preserve);
+                            child.has_child = targetHasChild || preserve.has_child;
                         }
                     } catch (err) {
                         console.warn(`Failed to resolve shortcut ${child.origin_node_token}: ${err.message}`);
@@ -243,7 +279,7 @@ class DocScraper {
                         child.slug = await this._slugify(child.token, child.name);
                         await this._fetchDriveChildren(child, null, recursive);
                     } else if (child.type === 'docx') {
-                        await this._fetchBlocks(child);
+                        if (!this._skipBlocks) await this._fetchBlocks(child);
                         child.slug = await this._slugify(child.token, child.name);
                         if (child.token) this.sourceMap.set(child.token, child);
                     }
@@ -266,7 +302,7 @@ class DocScraper {
         }
 
         this.tree = nodeData.node;
-        await this._fetchBlocks(this.tree);
+        if (!this._skipBlocks) await this._fetchBlocks(this.tree);
 
         // Register root
         if (this.tree.origin_node_token) {
@@ -380,7 +416,10 @@ class DocScraper {
 
         if (!token) return;
 
+        const nodeName = node.title || node.name || token;
+        console.log(`[scraper] Fetching blocks for "${nodeName}"...`);
         const { items } = await larkDocClient.getAllBlocks(token);
+        console.log(`[scraper]   ${items.length} blocks fetched`);
         node.blocks = { items, counts: items.length };
 
         // Fetch embedded sheet data

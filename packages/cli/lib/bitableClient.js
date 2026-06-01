@@ -1,29 +1,49 @@
-const fetch = require('node-fetch');
-const larkAuth = require('./larkAuth');
+const { feishuRequest } = require('./feishuClient');
 
 const FEISHU_HOST = process.env.FEISHU_HOST || 'https://open.feishu.cn';
 
 class BitableClient {
-  async request(method, path, body, options = {}) {
-    const headers = await larkAuth.headers();
-    const url = `${FEISHU_HOST}${path}`;
+  constructor() {
+    this._tableIdCache = {};
+  }
 
-    const res = await fetch(url, {
-      method,
-      headers: {
-        ...headers,
-        ...(options.headers || {})
-      },
-      ...(body ? { body: JSON.stringify(body) } : {})
-    });
+  _cacheKey(baseToken, name) {
+    return `${baseToken}:${name}`;
+  }
 
-    const data = await res.json();
+  async _resolveTableId(baseToken, tableIdOrName) {
+    if (!tableIdOrName) return tableIdOrName;
 
-    if (data.code !== 0 && data.code !== undefined) {
-      throw new Error(`Bitable API error: ${data.msg} (code: ${data.code})`);
+    const cacheKey = this._cacheKey(baseToken, tableIdOrName);
+    if (this._tableIdCache[cacheKey]) {
+      return this._tableIdCache[cacheKey];
     }
 
-    return data.data || data;
+    console.log(`[bitable] Resolving table ID for "${tableIdOrName}"...`);
+    const existing = await this.listTables(baseToken);
+    const items = existing.items || existing.data?.items || [];
+
+    for (const table of items) {
+      const id = table.table_id || table.table?.table_id;
+      const name = table.name;
+      if (id && name) {
+        this._tableIdCache[this._cacheKey(baseToken, name)] = id;
+        this._tableIdCache[this._cacheKey(baseToken, id)] = id;
+      }
+    }
+
+    const resolved = this._tableIdCache[cacheKey];
+    if (resolved) {
+      console.log(`[bitable] Resolved "${tableIdOrName}" -> "${resolved}"`);
+      return resolved;
+    }
+
+    console.log(`[bitable] Could not resolve "${tableIdOrName}", using as-is`);
+    return tableIdOrName;
+  }
+
+  async request(method, path, body, options = {}) {
+    return feishuRequest(method, path, body, options);
   }
 
   async createBase(name, folderToken) {
@@ -41,6 +61,7 @@ class BitableClient {
     return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables`, {
       table: {
         name,
+        table_id: name,
         fields
       }
     });
@@ -73,10 +94,9 @@ class BitableClient {
   }
 
   async findManualByName(baseToken, name) {
-    const records = await this.searchRecords(baseToken, 'tblManuals', {
-      conditions: [{ field_name: 'Name', operator: 'is', value: [name] }]
-    });
-    return records.items?.[0] || null;
+    const records = await this.listRecords(baseToken, 'tblManuals');
+    const items = records.items || [];
+    return items.find(r => r.fields.Name === name) || null;
   }
 
   async resolveManual(baseToken, manualName) {
@@ -101,18 +121,31 @@ class BitableClient {
   }
 
   async listFields(baseToken, tableId) {
-    return this.request('GET', `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/fields`);
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('GET', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/fields`);
   }
 
   async createField(baseToken, tableId, field) {
-    return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/fields`, {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/fields`, {
       field_name: field.field_name,
       type: field.type,
       property: field.property || {}
     });
   }
 
+  async listViews(baseToken, tableId) {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('GET', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/views`);
+  }
+
+  async createView(baseToken, tableId, viewConfig) {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/views`, viewConfig);
+  }
+
   async listRecords(baseToken, tableId, options = {}) {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
     const params = new URLSearchParams();
     if (options.viewId) params.append('view_id', options.viewId);
     if (options.filter) params.append('filter', JSON.stringify(options.filter));
@@ -120,23 +153,68 @@ class BitableClient {
     if (options.pageToken) params.append('page_token', options.pageToken);
 
     const query = params.toString() ? `?${params.toString()}` : '';
-    return this.request('GET', `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records${query}`);
+    return this.request('GET', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records${query}`);
+  }
+
+  /**
+   * List all records with auto-pagination.
+   * @param {string} baseToken
+   * @param {string} tableId
+   * @param {Object} options
+   * @returns {Promise<{ items: Object[] }>}
+   */
+  async listAllRecords(baseToken, tableId, options = {}) {
+    const allItems = [];
+    let pageToken = undefined;
+    const pageSize = options.pageSize || 500;
+    do {
+      const result = await this.listRecords(baseToken, tableId, {
+        ...options,
+        pageSize,
+        pageToken,
+      });
+      const items = result.items || [];
+      allItems.push(...items);
+      const nextToken = result.page_token || result.pageToken;
+      const hasMore = result.has_more || result.hasMore;
+      if (nextToken === pageToken) break;
+      pageToken = nextToken;
+      if (!hasMore) break;
+    } while (pageToken);
+    return { items: allItems };
   }
 
   async createRecord(baseToken, tableId, fields) {
-    return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records`, {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records`, {
       fields
+    });
+  }
+
+  async batchCreateRecords(baseToken, tableId, records) {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records/batch_create`, {
+      records
     });
   }
 
   async updateRecord(baseToken, tableId, recordId, fields) {
-    return this.request('PUT', `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`, {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('PUT', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records/${recordId}`, {
       fields
     });
   }
 
+  async batchUpdateRecords(baseToken, tableId, records) {
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records/batch_update`, {
+      records
+    });
+  }
+
   async deleteRecord(baseToken, tableId, recordId) {
-    return this.request('DELETE', `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`);
+    const resolvedId = await this._resolveTableId(baseToken, tableId);
+    return this.request('DELETE', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records/${recordId}`);
   }
 
   async searchRecords(baseToken, tableId, filter) {

@@ -25,7 +25,7 @@ BASE_TOKEN=<bitable-app-token>
 GITHUB_TOKEN=<github-pat>
 FEISHU_HOST=https://open.feishu.cn
 FEISHU_TENANT=<tenant-alias>
-DOCPLA_AUTH_MODE=bot
+DOCPAL_AUTH_MODE=bot
 ```
 
 2. Initialize DocPal:
@@ -72,3 +72,29 @@ docpal sync pull --repo <org/repo> --since 2026-01-01
 - `--dry-run` — Preview without executing
 - `--json` — Output as JSON
 - `--force` — Override warnings
+
+## Smoke Test
+
+Create `.env.smoke` at the repository root, then run:
+
+```bash
+pnpm smoke       # full Bitable + wiki/docx smoke
+pnpm smoke:docs  # wiki/docx only
+```
+
+Required `.env.smoke` keys:
+
+```bash
+APP_ID=<feishu-app-id>
+APP_SECRET=<feishu-app-secret>
+FEISHU_HOST=https://open.feishu.cn
+FEISHU_TENANT=<tenant-alias>
+DOCPAL_AUTH_MODE=bot
+BASE_TOKEN=<bitable-app-token>
+SMOKE_ROOT_TYPE=wiki
+SMOKE_ROOT_TOKEN=<wiki-root-or-space-token>
+SMOKE_PARENT_TOKEN=<writable-parent-wiki-node-token>
+```
+
+The app or authenticated user must have edit access to `SMOKE_PARENT_TOKEN`.
+For full smoke, it must also have edit/manage access to the Bitable in `BASE_TOKEN`.

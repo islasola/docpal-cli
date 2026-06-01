@@ -1,7 +1,17 @@
 const { MockBitableClient } = require('./mocks');
 
 function run({ test, assertEqual, assertTrue, assertFalse }) {
-    const { TABLE_SCHEMAS, LINK_FIELDS, MANUALS_TABLE } = require('../lib/tableSchemas');
+    const {
+        TABLE_SCHEMAS,
+        LINK_FIELDS,
+        MANUALS_TABLE,
+        DOCS_TABLE,
+        PUBLISH_TARGETS_TABLE,
+        DOC_PUBLISH_PATHS_TABLE,
+        PULL_REQUESTS_TABLE,
+        VERSIONS_TABLE,
+        SYNC_HISTORY_TABLE,
+    } = require('../lib/tableSchemas');
 
     // ---- Schema structure tests ----
     test('Table schemas should define 7 tables', () => {
@@ -15,8 +25,8 @@ function run({ test, assertEqual, assertTrue, assertFalse }) {
     });
 
     test('Table schemas should include Docs table', () => {
-        const docsTable = TABLE_SCHEMAS.find(t => t.name === 'Docs');
-        assertTrue(docsTable !== undefined, 'Should have Docs table');
+        const docsTable = TABLE_SCHEMAS.find(t => t.name === DOCS_TABLE);
+        assertTrue(docsTable !== undefined, `Should have ${DOCS_TABLE} table`);
         const slugField = docsTable.fields.find(f => f.field_name === 'Slug');
         assertTrue(slugField !== undefined, 'Docs should have Slug field');
     });
@@ -24,12 +34,12 @@ function run({ test, assertEqual, assertTrue, assertFalse }) {
     test('Link fields should include Manual links on data tables', () => {
         const manualLinks = LINK_FIELDS.filter(lf => lf.field_name === 'Manual');
         const tablesWithManual = manualLinks.map(lf => lf.table);
-        assertTrue(tablesWithManual.includes('Docs'), 'Docs should have Manual link');
-        assertTrue(tablesWithManual.includes('Publish Targets'), 'Publish Targets should have Manual link');
-        assertTrue(tablesWithManual.includes('Doc Publish Paths'), 'Doc Publish Paths should have Manual link');
-        assertTrue(tablesWithManual.includes('Pull Requests'), 'Pull Requests should have Manual link');
-        assertTrue(tablesWithManual.includes('Versions'), 'Versions should have Manual link');
-        assertTrue(tablesWithManual.includes('Sync History'), 'Sync History should have Manual link');
+        assertTrue(tablesWithManual.includes(DOCS_TABLE), 'Docs should have Manual link');
+        assertTrue(tablesWithManual.includes(PUBLISH_TARGETS_TABLE), 'Publish Targets should have Manual link');
+        assertTrue(tablesWithManual.includes(DOC_PUBLISH_PATHS_TABLE), 'Doc Publish Paths should have Manual link');
+        assertTrue(tablesWithManual.includes(PULL_REQUESTS_TABLE), 'Pull Requests should have Manual link');
+        assertTrue(tablesWithManual.includes(VERSIONS_TABLE), 'Versions should have Manual link');
+        assertTrue(tablesWithManual.includes(SYNC_HISTORY_TABLE), 'Sync History should have Manual link');
     });
 
     // ---- Init workflow with mock client ----

@@ -7,7 +7,9 @@
     "docpal": "./bin/docpal"
   },
   "scripts": {
-    "test": "node test/run-all.js"
+    "test": "node test/run-all.js",
+    "smoke": "node scripts/smoke-test.js",
+    "smoke:docs": "node scripts/smoke-test.js --docs-only"
   },
   "files": [
     "bin/",

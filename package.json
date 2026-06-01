@@ -6,6 +6,8 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "smoke": "pnpm --filter @islasola/docpal-cli smoke",
+    "smoke:docs": "pnpm --filter @islasola/docpal-cli smoke:docs",
     "lint": "turbo run lint",
     "version": "changeset version",
     "release": "changeset publish"

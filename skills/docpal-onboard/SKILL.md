@@ -30,7 +30,7 @@ One-time setup of DocPal CLI and its runtime dependency, lark-cli.
 - Wrong `FEISHU_HOST` (cn vs international)
 - Missing Feishu app scopes → cryptic 403 errors
 - Skipping `init`
-- Env typo `DOCPLA_AUTH_MODE` (note the missing L)
+- Env typo `DOCPLA_AUTH_MODE`; use `DOCPAL_AUTH_MODE`
 
 ## Next Step
 

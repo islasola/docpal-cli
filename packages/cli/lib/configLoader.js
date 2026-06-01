@@ -9,9 +9,9 @@ class ConfigLoader {
       feishuHost: process.env.FEISHU_HOST || 'https://open.feishu.cn',
       feishuTenant: process.env.FEISHU_TENANT || '',
 
-      authMode: process.env.DOCPLA_AUTH_MODE || 'bot',
+      authMode: process.env.DOCPAL_AUTH_MODE || 'bot',
 
-      authFilePath: process.env.DOCPLA_AUTH_FILE ||
+      authFilePath: process.env.DOCPAL_AUTH_FILE ||
         path.join(process.env.HOME || process.env.USERPROFILE || '~', '.docpal', 'auth.json'),
 
       githubToken: process.env.GITHUB_TOKEN,
@@ -84,7 +84,7 @@ class ConfigLoader {
   }
 
   saveBaseToken(token) {
-    const envPath = path.resolve(process.cwd(), '.env');
+    const envPath = path.resolve(__dirname, '..', '..', '..', '.env');
 
     let content = '';
     if (fs.existsSync(envPath)) {

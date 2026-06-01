@@ -16,6 +16,26 @@ function resolveBase(cliOverride) {
     return token;
 }
 
+function extractLinkRecordIds(fieldValue) {
+    if (!fieldValue) return [];
+    const arr = Array.isArray(fieldValue) ? fieldValue : [fieldValue];
+    const ids = [];
+    for (const item of arr) {
+        if (typeof item === 'string') {
+            ids.push(item);
+        } else if (item && typeof item === 'object') {
+            if (Array.isArray(item.record_ids)) {
+                ids.push(...item.record_ids);
+            } else if (item.record_id) {
+                ids.push(item.record_id);
+            } else if (item.id) {
+                ids.push(item.id);
+            }
+        }
+    }
+    return ids;
+}
+
 function parseArgs(args) {
     const parsed = {};
     for (let i = 0; i < args.length; i++) {
@@ -42,8 +62,6 @@ function parseArgs(args) {
             parsed.docToken = args[++i];
         } else if (arg === '--slug' && args[i + 1]) {
             parsed.slug = args[++i];
-        } else if (arg === '--parent' && args[i + 1]) {
-            parsed.parent = args[++i];
         } else if (arg === '--position' && args[i + 1]) {
             parsed.position = parseInt(args[++i], 10);
         } else if (arg === '--version' && args[i + 1]) {
@@ -111,8 +129,7 @@ Options:
   --doc-token <token>          Feishu doc token (required)
   --manual <name>              Manual name (auto-selected if only one)
   --slug <slug>                URL-friendly slug (auto-derived if omitted)
-  --parent <token>             Parent wiki node token
-  --position <n>               Sidebar position (auto-calculated if omitted)
+  --position <n>               Sidebar position (defaults to 1 if omitted)
   --dry-run                    Preview without adding
   --help, -h                   Show this help
 `,
@@ -176,6 +193,16 @@ Options:
   --table                     Output as aligned table
   --help, -h                  Show this help
 `,
+        sync: `
+Usage: docpal manual sync --manual <name> [options]
+
+Options:
+  --base <token>              Bitable app token (or set BASE_TOKEN in .env)
+  --manual <name>             Manual name (auto-selected if only one)
+  --dry-run                   Preview without syncing
+  --json                      Output as JSON
+  --help, -h                  Show this help
+`,
     };
 
     console.log(usages[subcommand] || `
@@ -190,6 +217,7 @@ Subcommands:
   release     Publish all approved docs as a versioned snapshot
   list        List all manuals
   status      Show pipeline status of docs in a manual
+  sync        Synchronize wiki tree with tblDocs
 
 Use docpal manual <subcommand> --help for more details.
 `);
@@ -270,13 +298,41 @@ async function manualConvert(args, globalArgs) {
     }
 
     try {
-        const manual = await bitableClient.createRecord(baseToken, 'tblManuals', {
-            'Name': args.name,
-            'Root Type': args.rootType === 'wiki' ? 'Wiki Space' : 'Drive Folder',
-            'Root Token': args.from,
-            'Default Publish Target': args.targets || [],
-        });
+        console.log('[convert] Checking for existing manual...');
+        const allManuals = await bitableClient.listAllRecords(baseToken, 'tblManuals');
+        let manual = (allManuals.items || []).find(m => m.fields['Root Token'] === args.from) || null;
+        if (manual) {
+            console.log('[convert] Reusing existing manual:', manual.record_id);
+        } else {
+            console.log('[convert] Creating manual record...');
+            manual = await bitableClient.createRecord(baseToken, 'tblManuals', {
+                'Name': args.name,
+                'Root Type': args.rootType === 'wiki' ? 'Wiki Space' : 'Drive Folder',
+                'Root Token': args.from,
+                'Default Publish Target': args.targets || [],
+            });
+            manual.record_id = manual.record?.record_id || manual.record_id;
+            console.log('[convert] Manual record created:', manual.record_id);
+        }
 
+        const feishuHost = process.env.FEISHU_HOST || 'zilliverse.feishu.cn';
+        let registered = 0;
+        let existed = 0;
+        let skipped = 0;
+        const wikiTokenToRecordId = new Map();
+
+        console.log('[convert] Loading existing docs for deduplication...');
+        const existingDocs = await bitableClient.listAllRecords(baseToken, 'tblDocs', { pageSize: 500 });
+        const existingSlugs = new Set();
+        for (const doc of existingDocs.items || []) {
+            const slug = doc.fields.Slug;
+            if (slug) existingSlugs.add(slug);
+            const wikiToken = extractTokenFromUrl(doc.fields.Doc);
+            if (wikiToken) wikiTokenToRecordId.set(wikiToken, doc.record_id);
+        }
+        console.log(`[convert] Found ${existingSlugs.size} existing docs`);
+
+        console.log('[convert] Initializing DocScraper...');
         const scraper = new DocScraper({
             rootToken: args.from,
             sourceType: args.rootType,
@@ -284,43 +340,122 @@ async function manualConvert(args, globalArgs) {
         });
 
         fmt.progress('Fetching document tree...');
-        const { tree, sourceMap } = await scraper.fetch({ recursive: true });
+        console.log('[convert] Starting scraper.fetch()...');
+        const { tree, sourceMap } = await scraper.fetch({ recursive: true, skipBlocks: true });
+        console.log('[convert] Scraper done. sourceMap size:', sourceMap.size);
         fmt.progress(`Found ${sourceMap.size} documents in the tree`);
 
-        let registered = 0;
-        for (const [token, node] of sourceMap) {
-            const isDocx = node.obj_type === 'docx' || node.type === 'docx';
-            if (!isDocx) continue;
+        // BFS level-by-level insertion
+        let currentLevel = [tree];
+        let level = 0;
+        while (currentLevel.length > 0) {
+            const nextLevel = [];
+            const batch = [];
+            const batchNodes = [];
 
-            const title = node.title || node.name || '';
-            const docSlug = node.slug || slugify(title, { lower: true, strict: true });
-            if (!title || !docSlug) continue;
+            for (const node of currentLevel) {
+                // Queue children for next level regardless of whether this node is inserted
+                if (node.children) {
+                    nextLevel.push(...node.children);
+                }
 
-            try {
-                const feishuHost = process.env.FEISHU_HOST || 'zilliverse.feishu.cn';
-                await bitableClient.createRecord(baseToken, 'tblDocs', {
-                    'Doc': `[${title}](https://${feishuHost}/wiki/${token})`,
+                const nodeToken = node.node_token || node.origin_node_token || node.obj_token || node.token;
+                if (nodeToken === args.from) {
+                    skipped++;
+                    continue;
+                }
+
+                const isDocx = node.obj_type === 'docx' || node.type === 'docx';
+                if (!isDocx) {
+                    skipped++;
+                    continue;
+                }
+
+                const title = node.title || node.name || '';
+                const docSlug = node.slug || slugify(title, { lower: true, strict: true });
+                if (!title || !docSlug) {
+                    skipped++;
+                    continue;
+                }
+
+                if (existingSlugs.has(docSlug)) {
+                    existed++;
+                    continue;
+                }
+
+                const token = node.node_token || node.origin_node_token || node.obj_token || node.token;
+                const record = {
+                    'Doc': { link: `https://${feishuHost}/wiki/${token}`, text: title },
                     'Slug': docSlug,
-                    'Parent Token': node.parent_node_token || '',
                     'Status': 'Draft',
                     'Progress': 'Writing',
-                    'Manual': [manual.record.record_id],
-                });
-                registered++;
-            } catch (err) {
-                fmt.progress(`  Failed to register ${title}: ${err.message}`);
+                    'Manual': [manual.record_id],
+                };
+
+                if (level >= 2) {
+                    const parentWikiToken = node.parent_node_token;
+                    const parentRecordId = wikiTokenToRecordId.get(parentWikiToken);
+                    if (parentRecordId) {
+                        record['Parent Doc'] = [parentRecordId];
+                    }
+                }
+
+                batch.push({ fields: record });
+                batchNodes.push({ node });
             }
+
+            if (batch.length > 0) {
+                console.log(`[convert] Level ${level}: inserting ${batch.length} docs...`);
+                try {
+                    const result = await bitableClient.batchCreateRecords(baseToken, 'tblDocs', batch);
+                    const records = result.records || [];
+                    for (let i = 0; i < records.length && i < batchNodes.length; i++) {
+                        const recordId = records[i].record_id;
+                        const node = batchNodes[i].node;
+                        if (node.origin_node_token) wikiTokenToRecordId.set(node.origin_node_token, recordId);
+                        if (node.node_token) wikiTokenToRecordId.set(node.node_token, recordId);
+                        if (node.obj_token) wikiTokenToRecordId.set(node.obj_token, recordId);
+                        if (node.token) wikiTokenToRecordId.set(node.token, recordId);
+                    }
+                    registered += batch.length;
+                    console.log(`[convert] Level ${level}: inserted ${batch.length} docs`);
+                } catch (err) {
+                    console.error(`[convert] Level ${level}: batch insert failed: ${err.message}`);
+                    // Fall back to individual inserts
+                    for (let i = 0; i < batch.length; i++) {
+                        try {
+                            const result = await bitableClient.createRecord(baseToken, 'tblDocs', batch[i].fields);
+                            const recordId = result.record_id || result.record?.record_id;
+                            if (recordId) {
+                                const node = batchNodes[i].node;
+                                if (node.origin_node_token) wikiTokenToRecordId.set(node.origin_node_token, recordId);
+                                if (node.node_token) wikiTokenToRecordId.set(node.node_token, recordId);
+                                if (node.obj_token) wikiTokenToRecordId.set(node.obj_token, recordId);
+                                if (node.token) wikiTokenToRecordId.set(node.token, recordId);
+                            }
+                            registered++;
+                        } catch (innerErr) {
+                            console.error(`[convert] Failed to insert ${batch[i].fields.Slug}: ${innerErr.message}`);
+                        }
+                    }
+                }
+            }
+
+            currentLevel = nextLevel;
+            level++;
         }
+        console.log(`[convert] BFS done. registered=${registered}, existed=${existed}, skipped=${skipped}`);
 
         fmt.render({
             name: args.name,
             from: args.from,
-            record_id: manual.record.record_id,
+            record_id: manual.record_id,
             registered,
+            existed,
             total: sourceMap.size,
         });
 
-        fmt.progress(`Registered ${registered} documents. Conversion complete.`);
+        fmt.progress(`Registered ${registered} new documents, skipped ${existed} existing. Conversion complete.`);
     } catch (err) {
         console.error(`Failed to convert manual: ${err.message}`);
         process.exit(1);
@@ -357,39 +492,26 @@ async function manualAdd(args, globalArgs) {
         const title = docInfo.document.title;
         const docSlug = args.slug || slugify(title, { lower: true, strict: true });
 
-        const existing = await bitableClient.searchRecords(baseToken, 'tblDocs', {
-            conditions: [{ field_name: 'Slug', operator: 'is', value: [docSlug] }]
-        });
+        const allDocs = await bitableClient.listAllRecords(baseToken, 'tblDocs', { pageSize: 500 });
+        const existing = (allDocs.items || []).find(d => d.fields.Slug === docSlug);
 
-        if (existing.items && existing.items.length > 0 && !args.force) {
+        if (existing && !args.force) {
             console.error(`Error: Slug "${docSlug}" already exists. Use --force to override.`);
             process.exit(1);
         }
 
-        const parentToken = args.parent || docInfo.document.folder_token;
-        let position = args.position;
-        if (!position) {
-            const siblings = await bitableClient.searchRecords(baseToken, 'tblDocs', {
-                conditions: [{ field_name: 'Parent Token', operator: 'is', value: [parentToken] }]
-            });
-            const positions = (siblings.items || [])
-                .map(r => r.fields['Sidebar Position'])
-                .filter(p => p !== undefined && p !== null)
-                .map(p => parseInt(p, 10));
-            position = positions.length > 0 ? Math.max(...positions) + 1 : 1;
-        }
+        const position = args.position || 1;
 
         const docRecord = await bitableClient.createRecord(baseToken, 'tblDocs', {
-            'Doc': `[${title}](https://${process.env.FEISHU_HOST || 'zilliverse.feishu.cn'}/wiki/${args.docToken})`,
+            'Doc': { link: `https://${process.env.FEISHU_HOST || 'zilliverse.feishu.cn'}/wiki/${args.docToken}`, text: title },
             'Slug': docSlug,
-            'Parent Token': parentToken,
             'Status': 'Draft',
             'Progress': 'Writing',
             'Sidebar Position': position,
             'Manual': [manual.record_id],
         });
 
-        const targets = await bitableClient.listRecords(baseToken, 'tblPublishTargets');
+        const targets = await bitableClient.listAllRecords(baseToken, 'tblPublishTargets');
         for (const target of targets.items || []) {
             const targetName = target.fields.Name;
             const outputPath = target.fields['Output Path'] || '';
@@ -446,18 +568,20 @@ async function manualApprove(args, globalArgs) {
 }
 
 async function approveSingle(baseToken, manual, args, fmt) {
-    const records = await bitableClient.searchRecords(baseToken, 'tblDocs', {
-        conditions: [{ field_name: 'Slug', operator: 'is', value: [args.slug] }]
+    const allDocs = await bitableClient.listAllRecords(baseToken, 'tblDocs', { pageSize: 500 });
+    const record = (allDocs.items || []).find(d => {
+        const manualIds = extractLinkRecordIds(d.fields.Manual);
+        return manualIds.includes(manual.record_id) && d.fields.Slug === args.slug;
     });
 
-    if (!records.items || records.items.length === 0) {
+    if (!record) {
         console.error(`Error: Doc "${args.slug}" not found in manual "${manual.fields.Name}"`);
         process.exit(1);
     }
-
-    const record = records.items[0];
     const currentStatus = record.fields.Status;
-    const docTitle = record.fields.Doc?.match(/\[([^\]]+)\]/)?.[1] || args.slug;
+    const docTitleField = record.fields.Doc;
+    const docTitleText = typeof docTitleField === 'string' ? docTitleField : (docTitleField?.text || '');
+    const docTitle = docTitleText.match(/\[([^\]]+)\]/)?.[1] || args.slug;
 
     if (currentStatus === 'Approved' && !args.force) {
         fmt.progress(`Warning: "${args.slug}" is already approved. Use --force to re-approve.`);
@@ -486,11 +610,11 @@ async function approveSingle(baseToken, manual, args, fmt) {
 }
 
 async function approveAll(baseToken, manual, args, fmt) {
-    const records = await bitableClient.searchRecords(baseToken, 'tblDocs', {
-        conditions: [{ field_name: 'Status', operator: 'is', value: ['In Review', 'Draft'] }]
+    const allDocs = await bitableClient.listAllRecords(baseToken, 'tblDocs', { pageSize: 500 });
+    const docs = (allDocs.items || []).filter(d => {
+        const manualIds = extractLinkRecordIds(d.fields.Manual);
+        return manualIds.includes(manual.record_id) && ['In Review', 'Draft'].includes(d.fields.Status);
     });
-
-    const docs = records.items || [];
     if (docs.length === 0) {
         fmt.progress('No docs to approve (In Review or Draft).');
         return;
@@ -534,31 +658,28 @@ async function manualPublish(args, globalArgs) {
     const manual = await bitableClient.resolveManual(baseToken, args.manualName);
 
     try {
-        const targets = await bitableClient.searchRecords(baseToken, 'tblPublishTargets', {
-            conditions: [{ field_name: 'Name', operator: 'is', value: [args.target] }]
-        });
+        const allTargets = await bitableClient.listAllRecords(baseToken, 'tblPublishTargets', { pageSize: 500 });
+        const targetConfig = (allTargets.items || []).find(t => t.fields.Name === args.target);
 
-        if (!targets.items || targets.items.length === 0) {
+        if (!targetConfig) {
             console.error(`Error: Publish target "${args.target}" not found`);
             process.exit(1);
         }
 
-        const targetConfig = targets.items[0];
         const repo = targetConfig.fields.Repo;
         const baseBranch = targetConfig.fields['Base Branch'] || 'main';
         const branchPrefix = targetConfig.fields['Branch Prefix'] || 'doc-sync-';
 
-        let filter = {
-            conditions: [{ field_name: 'Status', operator: 'is', value: ['Approved'] }]
-        };
-
+        const allDocs = await bitableClient.listAllRecords(baseToken, 'tblDocs', { pageSize: 500 });
+        let docs = (allDocs.items || []).filter(d => {
+            const manualIds = extractLinkRecordIds(d.fields.Manual);
+            return manualIds.includes(manual.record_id) && d.fields.Status === 'Approved';
+        });
         if (args.slug) {
-            filter.conditions.push({ field_name: 'Slug', operator: 'is', value: [args.slug] });
+            docs = docs.filter(d => d.fields.Slug === args.slug);
         }
 
-        const docs = await bitableClient.searchRecords(baseToken, 'tblDocs', filter);
-
-        if (!docs.items || docs.items.length === 0) {
+        if (docs.length === 0) {
             fmt.progress('No approved docs to publish.');
             fmt.render({ published: [], count: 0 });
             return;
@@ -582,7 +703,7 @@ async function manualPublish(args, globalArgs) {
         });
 
         const published = [];
-        for (const doc of docs.items) {
+        for (const doc of docs) {
             const result = await publishDoc(doc, baseToken, manual, targetConfig, {
                 repo,
                 baseBranch,
@@ -607,7 +728,7 @@ async function manualPublish(args, globalArgs) {
 
 async function publishDoc(doc, baseToken, manual, targetConfig, options) {
     const slug = doc.fields.Slug;
-    const docToken = extractTokenFromUrl(doc.fields.Doc);
+    const wikiToken = extractTokenFromUrl(doc.fields.Doc);
     const fmt = options.fmt;
 
     fmt.progress(`Publishing: ${slug}`);
@@ -625,6 +746,17 @@ async function publishDoc(doc, baseToken, manual, targetConfig, options) {
 
         const openPR = publishPath.fields['Open PR'];
         const repoPath = publishPath.fields['Repo Path'];
+
+        // Resolve wiki node token to obj_token for docx API
+        let docToken = wikiToken;
+        try {
+            const nodeInfo = await larkDocClient.getWikiNode(wikiToken);
+            if (nodeInfo && nodeInfo.node && nodeInfo.node.obj_token) {
+                docToken = nodeInfo.node.obj_token;
+            }
+        } catch (err) {
+            fmt.progress(`  Warning: Could not resolve wiki node ${wikiToken}, using as-is: ${err.message}`);
+        }
 
         const { items: blocks } = await larkDocClient.getAllBlocks(docToken);
 
@@ -649,7 +781,9 @@ async function publishDoc(doc, baseToken, manual, targetConfig, options) {
             fmt.progress(`  MDX issues for ${slug}: ${errors.join('; ')}`);
         }
 
-        const title = doc.fields['Sidebar Label'] || doc.fields.Doc?.match(/\[([^\]]+)\]/)?.[1] || slug;
+        const docFieldForTitle = doc.fields.Doc;
+        const docFieldText = typeof docFieldForTitle === 'string' ? docFieldForTitle : (docFieldForTitle?.text || '');
+        const title = doc.fields['Sidebar Label'] || docFieldText.match(/\[([^\]]+)\]/)?.[1] || slug;
         const frontMatter = generateFrontMatter({
             title,
             slug,
@@ -660,7 +794,7 @@ async function publishDoc(doc, baseToken, manual, targetConfig, options) {
             keywords: doc.fields.Keywords ? doc.fields.Keywords.split(',').map(k => k.trim()) : undefined,
             added_since: doc.fields['Added Since'],
             deprecated_since: doc.fields['Deprecated Since'],
-            token: docToken,
+            token: wikiToken,
         });
 
         const mdxContent = frontMatter + '\n\n' + patchedMdx;
@@ -695,7 +829,7 @@ async function publishDoc(doc, baseToken, manual, targetConfig, options) {
                 );
 
                 await gitHubClient.updatePullRequest(options.repo, prNumber, {
-                    body: `Updated at ${new Date().toISOString()}\n\nOriginal doc: ${doc.fields.Doc}`
+                    body: `Updated at ${new Date().toISOString()}\n\nOriginal doc: ${typeof doc.fields.Doc === 'string' ? doc.fields.Doc : (doc.fields.Doc?.link || doc.fields.Doc?.text || '')}`
                 });
 
                 pr = existingPR[0];
@@ -718,7 +852,7 @@ async function publishDoc(doc, baseToken, manual, targetConfig, options) {
                 `doc: ${slug}`,
                 branchName,
                 options.baseBranch,
-                `Auto-generated from Feishu doc: ${doc.fields.Doc}\n\nManual: ${manual.fields.Name}`
+                `Auto-generated from Feishu doc: ${typeof doc.fields.Doc === 'string' ? doc.fields.Doc : (doc.fields.Doc?.link || doc.fields.Doc?.text || '')}\n\nManual: ${manual.fields.Name}`
             );
         }
 
@@ -837,7 +971,7 @@ async function manualList(args, globalArgs) {
     const fmt = new OutputFormatter(globalArgs.outputFormat || (args.json || args.table ? (args.json ? 'json' : 'table') : 'text'));
 
     try {
-        const result = await bitableClient.listRecords(baseToken, 'tblManuals');
+        const result = await bitableClient.listAllRecords(baseToken, 'tblManuals');
         const manuals = result.items || [];
 
         if (globalArgs.outputFormat === 'json' || args.json) {
@@ -886,12 +1020,10 @@ async function manualStatus(args, globalArgs) {
     const manual = await bitableClient.resolveManual(baseToken, args.manualName);
 
     try {
-        const result = await bitableClient.listRecords(baseToken, 'tblDocs');
+        const result = await bitableClient.listAllRecords(baseToken, 'tblDocs');
         const docs = (result.items || []).filter(d => {
-            const manualField = d.fields.Manual;
-            if (!manualField) return true;
-            const manualIds = Array.isArray(manualField) ? manualField : [manualField];
-            return manualIds.includes(manual.record_id);
+            const manualIds = extractLinkRecordIds(d.fields.Manual);
+            return manualIds.length === 0 || manualIds.includes(manual.record_id);
         });
 
         const statusCounts = {};
@@ -901,12 +1033,14 @@ async function manualStatus(args, globalArgs) {
         }
 
         const docData = docs.map(d => {
-            const docUrl = d.fields.Doc || '';
+            const docField = d.fields.Doc;
+            const docUrl = typeof docField === 'string' ? docField : (docField?.link || '');
+            const docText = typeof docField === 'string' ? docField : (docField?.text || '');
             const prUrl = '';
             let prNumber = '';
             return {
                 slug: d.fields.Slug || '',
-                title: docUrl.match(/\[([^\]]+)\]/)?.[1] || d.fields.Slug || '',
+                title: docText.match(/\[([^\]]+)\]/)?.[1] || docText || d.fields.Slug || '',
                 status: d.fields.Status || '',
                 progress: d.fields.Progress || '',
                 sync_status: d.fields['Sync Status'] || '',
@@ -941,6 +1075,258 @@ async function manualStatus(args, globalArgs) {
     }
 }
 
+async function manualSync(args, globalArgs) {
+    if (args.help) {
+        printManualUsage('sync');
+        return;
+    }
+
+    const baseToken = resolveBase(args.baseToken);
+    const fmt = new OutputFormatter(globalArgs.outputFormat || (args.json ? 'json' : 'text'));
+
+    const manual = await bitableClient.resolveManual(baseToken, args.manualName);
+
+    fmt.progress(`Syncing manual: ${manual.fields.Name}`);
+
+    if (args.dryRun) {
+        fmt.progress('[DRY RUN] Would scan tree and sync with tblDocs');
+        fmt.render({ manual: manual.fields.Name, dry_run: true });
+        return;
+    }
+
+    try {
+        const scraper = new DocScraper({
+            rootToken: manual.fields['Root Token'],
+            sourceType: manual.fields['Root Type'] === 'Wiki Space' ? 'wiki' : 'drive',
+            spaceId: process.env.SPACE_ID,
+        });
+
+        fmt.progress('Fetching document tree...');
+        const { tree } = await scraper.fetch({ recursive: true, skipBlocks: true });
+        fmt.progress(`Found ${scraper.sourceMap.size} documents in the tree`);
+
+        const existingDocs = await bitableClient.listAllRecords(baseToken, 'tblDocs', { pageSize: 500 });
+        const existingByWikiToken = new Map();
+        const existingBySlug = new Map();
+        const wikiTokenToRecordId = new Map();
+        const manualRecordId = manual.record_id;
+
+        for (const doc of existingDocs.items || []) {
+            const manualIds = extractLinkRecordIds(doc.fields.Manual);
+            if (!manualIds.includes(manualRecordId)) continue;
+
+            const wikiToken = extractTokenFromUrl(doc.fields.Doc);
+            const slug = doc.fields.Slug;
+            if (wikiToken) {
+                existingByWikiToken.set(wikiToken, doc);
+                wikiTokenToRecordId.set(wikiToken, doc.record_id);
+            }
+            if (slug) existingBySlug.set(slug, doc);
+        }
+        fmt.progress(`Found ${existingByWikiToken.size} existing docs for this manual`);
+
+        const feishuHost = process.env.FEISHU_HOST || 'zilliverse.feishu.cn';
+        let created = 0;
+        let updated = 0;
+        let unchanged = 0;
+        let skipped = 0;
+        const treeWikiTokens = new Set();
+        const updateBatch = [];
+
+        let currentLevel = [tree];
+        let level = 0;
+        while (currentLevel.length > 0) {
+            const nextLevel = [];
+            const batch = [];
+            const batchNodes = [];
+
+            for (const node of currentLevel) {
+                if (node.children) {
+                    nextLevel.push(...node.children);
+                }
+
+                const nodeToken = node.node_token || node.origin_node_token || node.obj_token || node.token;
+                if (nodeToken) treeWikiTokens.add(nodeToken);
+
+                if (nodeToken === manual.fields['Root Token']) {
+                    skipped++;
+                    continue;
+                }
+
+                const isDocx = node.obj_type === 'docx' || node.type === 'docx';
+                if (!isDocx) {
+                    skipped++;
+                    continue;
+                }
+
+                const title = node.title || node.name || '';
+                const docSlug = node.slug || slugify(title, { lower: true, strict: true });
+                if (!title || !docSlug) {
+                    skipped++;
+                    continue;
+                }
+
+                const existing = existingByWikiToken.get(nodeToken) || existingBySlug.get(docSlug);
+                if (existing) {
+                    const updates = {};
+                    const existingDocField = existing.fields.Doc;
+                    const existingTitle = typeof existingDocField === 'object' ? existingDocField.text : '';
+                    const existingUrl = typeof existingDocField === 'object' ? existingDocField.link : existingDocField;
+                    const existingToken = extractTokenFromUrl(existingUrl);
+
+                    if (existingTitle !== title || existingToken !== nodeToken) {
+                        updates['Doc'] = { link: `https://${feishuHost}/wiki/${nodeToken}`, text: title };
+                    }
+
+                    if (level >= 2) {
+                        const parentWikiToken = node.parent_node_token;
+                        const parentRecordId = wikiTokenToRecordId.get(parentWikiToken);
+                        const existingParentIds = extractLinkRecordIds(existing.fields['Parent Doc']);
+                        const existingParentId = existingParentIds[0] || null;
+                        if (parentRecordId && parentRecordId !== existingParentId) {
+                            updates['Parent Doc'] = [parentRecordId];
+                        }
+                    }
+
+                    if (Object.keys(updates).length > 0) {
+                        updateBatch.push({ record_id: existing.record_id, fields: updates });
+                        updated++;
+                    } else {
+                        unchanged++;
+                    }
+
+                    wikiTokenToRecordId.set(nodeToken, existing.record_id);
+                } else {
+                    const record = {
+                        'Doc': { link: `https://${feishuHost}/wiki/${nodeToken}`, text: title },
+                        'Slug': docSlug,
+                        'Status': 'Draft',
+                        'Progress': 'Writing',
+                        'Manual': [manual.record_id],
+                    };
+
+                    if (level >= 2) {
+                        const parentWikiToken = node.parent_node_token;
+                        const parentRecordId = wikiTokenToRecordId.get(parentWikiToken);
+                        if (parentRecordId) {
+                            record['Parent Doc'] = [parentRecordId];
+                        }
+                    }
+
+                    batch.push({ fields: record });
+                    batchNodes.push({ node });
+                }
+            }
+
+            if (batch.length > 0) {
+                console.log(`[sync] Level ${level}: creating ${batch.length} new docs...`);
+                try {
+                    const result = await bitableClient.batchCreateRecords(baseToken, 'tblDocs', batch);
+                    const records = result.records || [];
+                    for (let i = 0; i < records.length && i < batchNodes.length; i++) {
+                        const recordId = records[i].record_id;
+                        const node = batchNodes[i].node;
+                        if (node.node_token) wikiTokenToRecordId.set(node.node_token, recordId);
+                        if (node.origin_node_token) wikiTokenToRecordId.set(node.origin_node_token, recordId);
+                        if (node.obj_token) wikiTokenToRecordId.set(node.obj_token, recordId);
+                        if (node.token) wikiTokenToRecordId.set(node.token, recordId);
+                    }
+                    created += batch.length;
+                    console.log(`[sync] Level ${level}: created ${batch.length} docs`);
+                } catch (err) {
+                    console.error(`[sync] Level ${level}: batch create failed: ${err.message}`);
+                    for (let i = 0; i < batch.length; i++) {
+                        try {
+                            const result = await bitableClient.createRecord(baseToken, 'tblDocs', batch[i].fields);
+                            const recordId = result.record_id || result.record?.record_id;
+                            if (recordId) {
+                                const node = batchNodes[i].node;
+                                if (node.node_token) wikiTokenToRecordId.set(node.node_token, recordId);
+                                if (node.origin_node_token) wikiTokenToRecordId.set(node.origin_node_token, recordId);
+                                if (node.obj_token) wikiTokenToRecordId.set(node.obj_token, recordId);
+                                if (node.token) wikiTokenToRecordId.set(node.token, recordId);
+                            }
+                            created++;
+                        } catch (innerErr) {
+                            console.error(`[sync] Failed to create ${batch[i].fields.Slug}: ${innerErr.message}`);
+                        }
+                    }
+                }
+            }
+
+            currentLevel = nextLevel;
+            level++;
+        }
+
+        // Batch apply updates
+        if (updateBatch.length > 0 && !args.dryRun) {
+            console.log(`[sync] Batch updating ${updateBatch.length} docs...`);
+            try {
+                await bitableClient.batchUpdateRecords(baseToken, 'tblDocs', updateBatch);
+                console.log(`[sync] Batch updated ${updateBatch.length} docs`);
+            } catch (err) {
+                console.error(`[sync] Batch update failed: ${err.message}`);
+                for (const item of updateBatch) {
+                    try {
+                        await bitableClient.updateRecord(baseToken, 'tblDocs', item.record_id, item.fields);
+                    } catch (innerErr) {
+                        console.error(`[sync] Failed to update ${item.record_id}: ${innerErr.message}`);
+                    }
+                }
+            }
+        }
+
+        let deprecated = 0;
+        const deprecateBatch = [];
+        for (const [wikiToken, doc] of existingByWikiToken) {
+            if (!treeWikiTokens.has(wikiToken)) {
+                const currentStatus = doc.fields.Status;
+                if (currentStatus !== 'Deprecated') {
+                    deprecateBatch.push({
+                        record_id: doc.record_id,
+                        fields: {
+                            'Status': 'Deprecated',
+                            'Progress': 'Ready',
+                        }
+                    });
+                    deprecated++;
+                }
+            }
+        }
+
+        if (deprecateBatch.length > 0 && !args.dryRun) {
+            console.log(`[sync] Batch deprecating ${deprecateBatch.length} docs...`);
+            try {
+                await bitableClient.batchUpdateRecords(baseToken, 'tblDocs', deprecateBatch);
+                console.log(`[sync] Batch deprecated ${deprecateBatch.length} docs`);
+            } catch (err) {
+                console.error(`[sync] Batch deprecate failed: ${err.message}`);
+                for (const item of deprecateBatch) {
+                    try {
+                        await bitableClient.updateRecord(baseToken, 'tblDocs', item.record_id, item.fields);
+                    } catch (innerErr) {
+                        console.error(`[sync] Failed to deprecate ${item.record_id}: ${innerErr.message}`);
+                    }
+                }
+            }
+        }
+
+        fmt.render({
+            manual: manual.fields.Name,
+            created,
+            updated,
+            unchanged,
+            deprecated,
+            skipped,
+        });
+
+        fmt.progress(`Sync complete: ${created} created, ${updated} updated, ${unchanged} unchanged, ${deprecated} deprecated, ${skipped} skipped`);
+    } catch (err) {
+        console.error(`Failed to sync manual: ${err.message}`);
+        process.exit(1);
+    }
+}
+
 async function run(subcommand, args, globalArgs) {
     const parsed = parseArgs(args);
     const mergedGlobalArgs = { ...globalArgs };
@@ -970,13 +1356,18 @@ async function run(subcommand, args, globalArgs) {
         case 'status':
             await manualStatus(parsed, mergedGlobalArgs);
             break;
+        case 'sync':
+            await manualSync(parsed, mergedGlobalArgs);
+            break;
         default:
             printManualUsage();
             process.exit(1);
     }
 }
 
-function extractTokenFromUrl(url) {
+function extractTokenFromUrl(urlOrField) {
+    if (!urlOrField) return null;
+    const url = typeof urlOrField === 'string' ? urlOrField : urlOrField.link;
     if (!url) return null;
     const match = url.match(/\/wiki\/(\w+)/);
     return match ? match[1] : null;

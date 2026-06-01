@@ -1,4 +1,10 @@
 const MANUALS_TABLE = 'tblManuals';
+const DOCS_TABLE = 'tblDocs';
+const PUBLISH_TARGETS_TABLE = 'tblPublishTargets';
+const DOC_PUBLISH_PATHS_TABLE = 'tblDocPublishPaths';
+const PULL_REQUESTS_TABLE = 'tblPullRequests';
+const VERSIONS_TABLE = 'tblVersions';
+const SYNC_HISTORY_TABLE = 'tblSyncHistory';
 
 const TABLE_SCHEMAS = [
     {
@@ -16,11 +22,10 @@ const TABLE_SCHEMAS = [
         linkFields: []
     },
     {
-        name: 'Docs',
+        name: DOCS_TABLE,
         fields: [
             { field_name: 'Doc', type: 15 },
             { field_name: 'Slug', type: 1 },
-            { field_name: 'Parent Token', type: 1 },
             { field_name: 'Status', type: 3, property: { options: [
                 { name: 'Draft', color: 0 },
                 { name: 'In Review', color: 1 },
@@ -49,7 +54,12 @@ const TABLE_SCHEMAS = [
             ]}},
             { field_name: 'Added Since', type: 1 },
             { field_name: 'Deprecated Since', type: 1 },
-            { field_name: 'Beta', type: 7 },
+            { field_name: 'Beta', type: 3, property: { options: [
+                { name: 'PRIVATE', color: 0 },
+                { name: 'PUBLIC', color: 1 },
+                { name: 'DEPRECATE', color: 2 },
+                { name: 'CONTACT SALES', color: 3 }
+            ]}},
             { field_name: 'Notebook', type: 7 },
             { field_name: 'Keywords', type: 1 },
             { field_name: 'Sidebar Label', type: 1 },
@@ -68,7 +78,7 @@ const TABLE_SCHEMAS = [
         linkFields: []
     },
     {
-        name: 'Publish Targets',
+        name: PUBLISH_TARGETS_TABLE,
         fields: [
             { field_name: 'Name', type: 1 },
             { field_name: 'Repo', type: 1 },
@@ -81,7 +91,7 @@ const TABLE_SCHEMAS = [
         linkFields: []
     },
     {
-        name: 'Doc Publish Paths',
+        name: DOC_PUBLISH_PATHS_TABLE,
         fields: [
             { field_name: 'Repo Path', type: 1 },
             { field_name: 'Open PR', type: 1 },
@@ -97,7 +107,7 @@ const TABLE_SCHEMAS = [
         linkFields: []
     },
     {
-        name: 'Pull Requests',
+        name: PULL_REQUESTS_TABLE,
         fields: [
             { field_name: 'PR URL', type: 1 },
             { field_name: 'PR Number', type: 2 },
@@ -114,7 +124,7 @@ const TABLE_SCHEMAS = [
         linkFields: []
     },
     {
-        name: 'Versions',
+        name: VERSIONS_TABLE,
         fields: [
             { field_name: 'Version', type: 1 },
             { field_name: 'Tag Name', type: 1 },
@@ -124,7 +134,7 @@ const TABLE_SCHEMAS = [
         linkFields: []
     },
     {
-        name: 'Sync History',
+        name: SYNC_HISTORY_TABLE,
         fields: [
             { field_name: 'Action', type: 3, property: { options: [
                 { name: 'Pushed to Feishu', color: 0 },
@@ -139,20 +149,31 @@ const TABLE_SCHEMAS = [
 ];
 
 const LINK_FIELDS = [
-    { table: 'Docs', field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
-    { table: 'Publish Targets', field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
-    { table: 'Doc Publish Paths', field_name: 'Doc', linked_table: 'Docs', multiple: false },
-    { table: 'Doc Publish Paths', field_name: 'Target', linked_table: 'Publish Targets', multiple: false },
-    { table: 'Doc Publish Paths', field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
-    { table: 'Pull Requests', field_name: 'Doc', linked_table: 'Docs', multiple: false },
-    { table: 'Pull Requests', field_name: 'Target', linked_table: 'Publish Targets', multiple: false },
-    { table: 'Pull Requests', field_name: 'Doc Publish Path', linked_table: 'Doc Publish Paths', multiple: false },
-    { table: 'Pull Requests', field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
-    { table: 'Versions', field_name: 'Publish Target', linked_table: 'Publish Targets', multiple: false },
-    { table: 'Versions', field_name: 'Docs', linked_table: 'Docs', multiple: true },
-    { table: 'Versions', field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
-    { table: 'Sync History', field_name: 'Doc', linked_table: 'Docs', multiple: false },
-    { table: 'Sync History', field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
+    { table: DOCS_TABLE, field_name: 'Parent Doc', linked_table: DOCS_TABLE, multiple: false, type: 18 },
+    { table: DOCS_TABLE, field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
+    { table: PUBLISH_TARGETS_TABLE, field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
+    { table: DOC_PUBLISH_PATHS_TABLE, field_name: 'Doc', linked_table: DOCS_TABLE, multiple: false },
+    { table: DOC_PUBLISH_PATHS_TABLE, field_name: 'Target', linked_table: PUBLISH_TARGETS_TABLE, multiple: false },
+    { table: DOC_PUBLISH_PATHS_TABLE, field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
+    { table: PULL_REQUESTS_TABLE, field_name: 'Doc', linked_table: DOCS_TABLE, multiple: false },
+    { table: PULL_REQUESTS_TABLE, field_name: 'Target', linked_table: PUBLISH_TARGETS_TABLE, multiple: false },
+    { table: PULL_REQUESTS_TABLE, field_name: 'Doc Publish Path', linked_table: DOC_PUBLISH_PATHS_TABLE, multiple: false },
+    { table: PULL_REQUESTS_TABLE, field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
+    { table: VERSIONS_TABLE, field_name: 'Publish Target', linked_table: PUBLISH_TARGETS_TABLE, multiple: false },
+    { table: VERSIONS_TABLE, field_name: 'Docs', linked_table: DOCS_TABLE, multiple: true },
+    { table: VERSIONS_TABLE, field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
+    { table: SYNC_HISTORY_TABLE, field_name: 'Doc', linked_table: DOCS_TABLE, multiple: false },
+    { table: SYNC_HISTORY_TABLE, field_name: 'Manual', linked_table: MANUALS_TABLE, multiple: false },
 ];
 
-module.exports = { MANUALS_TABLE, TABLE_SCHEMAS, LINK_FIELDS };
+module.exports = {
+    MANUALS_TABLE,
+    DOCS_TABLE,
+    PUBLISH_TARGETS_TABLE,
+    DOC_PUBLISH_PATHS_TABLE,
+    PULL_REQUESTS_TABLE,
+    VERSIONS_TABLE,
+    SYNC_HISTORY_TABLE,
+    TABLE_SCHEMAS,
+    LINK_FIELDS
+};
