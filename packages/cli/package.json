@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node test/run-all.js",
     "smoke": "node scripts/smoke-test.js",
-    "smoke:docs": "node scripts/smoke-test.js --docs-only"
+    "smoke:docs": "node scripts/smoke-test.js --docs-only",
+    "integration": "node scripts/integration-test.js"
   },
   "files": [
     "bin/",

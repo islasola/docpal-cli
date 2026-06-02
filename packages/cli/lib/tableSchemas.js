@@ -65,6 +65,7 @@ const TABLE_SCHEMAS = [
             { field_name: 'Sidebar Label', type: 1 },
             { field_name: 'Sidebar Position', type: 2 },
             { field_name: 'Content Hash', type: 1 },
+            { field_name: 'Last Modified', type: 5 },
             { field_name: 'Last Sync SHA', type: 1 },
             { field_name: 'Last Published At', type: 5 },
             { field_name: 'Sync Status', type: 3, property: { options: [

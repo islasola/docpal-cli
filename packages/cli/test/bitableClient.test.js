@@ -1,4 +1,5 @@
 const { MockBitableClient } = require('./mocks');
+const bitableClient = require('../lib/bitableClient');
 
 function run({ test, assertEqual, assertTrue, assertFalse, assertThrows }) {
     test('BitableClient should create a base', async () => {
@@ -75,6 +76,32 @@ function run({ test, assertEqual, assertTrue, assertFalse, assertThrows }) {
 
         const records = await client.listRecords(token, table.table.table_id);
         assertEqual(records.items[0].fields.Status, 'Approved', 'Status should be updated');
+    });
+
+    test('BitableClient should normalize known date fields for Feishu', async () => {
+        const originalResolveTableId = bitableClient._resolveTableId;
+        const originalRequest = bitableClient.request;
+        let requestBody = null;
+
+        bitableClient._resolveTableId = async () => 'tblDocs';
+        bitableClient.request = async (_method, _path, body) => {
+            requestBody = body;
+            return { record: { record_id: 'rec1', fields: body.fields } };
+        };
+
+        try {
+            await bitableClient.updateRecord('base1', 'tblDocs', 'rec1', {
+                Slug: 'getting-started',
+                'Last Modified': '2026-06-02T00:00:00.000Z',
+            });
+        } finally {
+            bitableClient._resolveTableId = originalResolveTableId;
+            bitableClient.request = originalRequest;
+        }
+
+        assertEqual(requestBody.fields.Slug, 'getting-started', 'Non-date fields should be preserved');
+        assertEqual(typeof requestBody.fields['Last Modified'], 'number', 'Date field should be converted to timestamp');
+        assertEqual(requestBody.fields['Last Modified'], 1780358400000, 'Date timestamp should match parsed ISO string');
     });
 
     test('BitableClient should search records with filter', async () => {

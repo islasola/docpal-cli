@@ -1,6 +1,35 @@
 const { feishuRequest } = require('./feishuClient');
+const { TABLE_SCHEMAS } = require('./tableSchemas');
 
 const FEISHU_HOST = process.env.FEISHU_HOST || 'https://open.feishu.cn';
+const DATE_FIELD_NAMES_BY_TABLE = TABLE_SCHEMAS.reduce((acc, table) => {
+  acc[table.name] = new Set(table.fields.filter(field => field.type === 5).map(field => field.field_name));
+  return acc;
+}, {});
+
+function normalizeBitableDate(value) {
+  if (!value) return value;
+  if (typeof value === 'number') return value;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string') {
+    const timestamp = Date.parse(value);
+    return Number.isNaN(timestamp) ? value : timestamp;
+  }
+  return value;
+}
+
+function normalizeFields(tableIdOrName, fields = {}) {
+  const dateFieldNames = DATE_FIELD_NAMES_BY_TABLE[tableIdOrName];
+  if (!dateFieldNames || dateFieldNames.size === 0) return fields;
+
+  const normalized = { ...fields };
+  for (const fieldName of dateFieldNames) {
+    if (Object.prototype.hasOwnProperty.call(normalized, fieldName)) {
+      normalized[fieldName] = normalizeBitableDate(normalized[fieldName]);
+    }
+  }
+  return normalized;
+}
 
 class BitableClient {
   constructor() {
@@ -74,17 +103,30 @@ class BitableClient {
 
     if (!table) {
       table = await this.createTable(baseToken, name, fields);
+      table._existed = false;
+    } else {
+      table._existed = true;
     }
 
-    if (table && linkFields && linkFields.length > 0) {
+    if (table) {
       const tableId = table.table_id || table.table?.table_id;
       if (tableId) {
         const existingFields = await this.listFields(baseToken, tableId);
         const existingNames = (existingFields.items || []).map(f => f.field_name);
 
-        for (const lf of linkFields) {
-          if (!existingNames.includes(lf.field_name)) {
-            await this.createField(baseToken, tableId, lf);
+        for (const field of fields) {
+          if (!existingNames.includes(field.field_name)) {
+            await this.createField(baseToken, tableId, field);
+            existingNames.push(field.field_name);
+          }
+        }
+
+        if (linkFields && linkFields.length > 0) {
+          for (const lf of linkFields) {
+            if (!existingNames.includes(lf.field_name)) {
+              await this.createField(baseToken, tableId, lf);
+              existingNames.push(lf.field_name);
+            }
           }
         }
       }
@@ -187,28 +229,34 @@ class BitableClient {
   async createRecord(baseToken, tableId, fields) {
     const resolvedId = await this._resolveTableId(baseToken, tableId);
     return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records`, {
-      fields
+      fields: normalizeFields(tableId, fields)
     });
   }
 
   async batchCreateRecords(baseToken, tableId, records) {
     const resolvedId = await this._resolveTableId(baseToken, tableId);
     return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records/batch_create`, {
-      records
+      records: records.map(record => ({
+        ...record,
+        fields: normalizeFields(tableId, record.fields),
+      }))
     });
   }
 
   async updateRecord(baseToken, tableId, recordId, fields) {
     const resolvedId = await this._resolveTableId(baseToken, tableId);
     return this.request('PUT', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records/${recordId}`, {
-      fields
+      fields: normalizeFields(tableId, fields)
     });
   }
 
   async batchUpdateRecords(baseToken, tableId, records) {
     const resolvedId = await this._resolveTableId(baseToken, tableId);
     return this.request('POST', `/open-apis/bitable/v1/apps/${baseToken}/tables/${resolvedId}/records/batch_update`, {
-      records
+      records: records.map(record => ({
+        ...record,
+        fields: normalizeFields(tableId, record.fields),
+      }))
     });
   }
 
