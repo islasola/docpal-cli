@@ -1,6 +1,6 @@
 {
   "name": "@islasola/docpal-cli",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "CLI tool for managing docs on Feishu and publishing to Docusaurus",
   "main": "bin/docpal",
   "bin": {

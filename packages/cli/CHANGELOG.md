@@ -1,5 +1,11 @@
 # @islasola/docpal-cli
 
+## 0.2.2
+
+### Patch Changes
+
+- Add Feishu smoke and integration workflows for manual, document, and translation management.
+
 ## 0.2.1
 
 ### Patch Changes
